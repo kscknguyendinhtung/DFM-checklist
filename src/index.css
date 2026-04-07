@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  .prose-sm {
+    @apply text-sm leading-relaxed;
+  }
+  .prose-sm p {
+    @apply mb-3;
+  }
+  .prose-sm ul {
+    @apply list-disc pl-5 mb-3;
+  }
+  .prose-sm ol {
+    @apply list-decimal pl-5 mb-3;
+  }
+  .prose-sm strong {
+    @apply font-bold text-gray-900;
+  }
+}

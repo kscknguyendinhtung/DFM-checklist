@@ -1,0 +1,117 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: projects
+    // Document ID: {projectId}
+    // Fields:
+    //   - name: string (required)
+    //   - createdAt: string (required, date-time)
+    //   - ownerId: string (required, UID)
+    //   - status: string (required, enum: ["in-progress", "completed"])
+    //
+    // Collection: checklist_items
+    // Document ID: {itemId}
+    // Fields:
+    //   - item: string (required)
+    //   - subItem: string (required)
+    //   - checkPoint: string (required)
+    //   - standard: string (required)
+    //
+    // Collection: projects/{projectId}/results
+    // Document ID: {resultId}
+    // Fields:
+    //   - projectId: string (required)
+    //   - checklistItemId: string (required)
+    //   - status: string (required, enum: ["OK", "NG", "N/A"])
+    //   - remark: string (optional)
+    //   - updatedAt: string (required, date-time)
+    //
+    // Collection: lessons_learned
+    // Document ID: {lessonId}
+    // Fields:
+    //   - title: string (required)
+    //   - content: string (required)
+    //   - category: string (required)
+    //   - createdAt: string (required, date-time)
+    //   - authorId: string (required, UID)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "ksck.nguyendinhtung@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['name', 'createdAt', 'ownerId', 'status']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.status in ['in-progress', 'completed'];
+    }
+
+    function isValidCheckResult(data) {
+      return data.keys().hasAll(['projectId', 'checklistItemId', 'status', 'updatedAt']) &&
+             data.status in ['OK', 'NG', 'N/A'] &&
+             (data.remark == null || (data.remark is string && data.remark.size() < 1000));
+    }
+
+    function isValidLesson(data) {
+      return data.keys().hasAll(['title', 'content', 'category', 'createdAt', 'authorId']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.content is string && data.content.size() > 0 && data.content.size() < 5000;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    // Projects
+    match /projects/{projectId} {
+      allow read: if isAuthenticated() && (resource == null || resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidProject(request.resource.data) && request.resource.data.ownerId == request.auth.uid;
+      allow update: if isAuthenticated() && isValidProject(request.resource.data) && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (resource.data.ownerId == request.auth.uid || isAdmin());
+
+      // Results subcollection
+      match /results/{resultId} {
+        allow read: if isAuthenticated() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAdmin());
+        allow create, update: if isAuthenticated() && isValidCheckResult(request.resource.data) && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAdmin());
+        allow delete: if isAuthenticated() && (get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid || isAdmin());
+      }
+    }
+
+    // Master Checklist Items
+    match /checklist_items/{itemId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Lessons Learned
+    match /lessons_learned/{lessonId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidLesson(request.resource.data) && request.resource.data.authorId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isAdmin());
+    }
+
+    // Users (for role-based access)
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin();
+    }
+  }
+}
