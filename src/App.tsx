@@ -24,34 +24,17 @@ import {
   MessageSquare
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  onAuthStateChanged, 
-  signOut, 
-  User 
-} from 'firebase/auth';
-import { 
-  collection, 
-  addDoc, 
-  getDocs, 
-  query, 
-  where, 
-  orderBy, 
-  serverTimestamp, 
-  doc, 
-  setDoc, 
-  updateDoc,
-  deleteDoc,
-  onSnapshot,
-  getDoc
-} from 'firebase/firestore';
-import { auth, db } from './firebase';
 import { MASTER_CHECKLIST } from './constants';
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import Markdown from 'react-markdown';
 
 // --- Types ---
+
+interface User {
+  uid: string;
+  displayName: string;
+  email: string;
+}
 
 interface Project {
   id: string;
@@ -198,88 +181,143 @@ export default function App() {
   const checksheetInputRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // --- Auth & Initial Data ---
-  // ... (existing useEffect and auth functions) ...
+  // --- Mock Auth & Data Persistence ---
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      setUser(u);
-      setLoading(false);
-      if (u) {
-        seedChecklistOnce();
-        fetchProjects(u.uid);
-        fetchLessons();
-      }
-    });
-    return unsubscribe;
+    const savedUser = localStorage.getItem('dfm_user');
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+    }
+    setLoading(false);
   }, []);
 
+  useEffect(() => {
+    if (user) {
+      seedChecklistOnce();
+      fetchProjects();
+      fetchLessons();
+    }
+  }, [user]);
+
   const login = async () => {
-    const provider = new GoogleAuthProvider();
-    try {
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error("Login failed", error);
+    const mockUser: User = {
+      uid: 'user-123',
+      displayName: 'DFM Expert',
+      email: 'expert@example.com'
+    };
+    localStorage.setItem('dfm_user', JSON.stringify(mockUser));
+    setUser(mockUser);
+  };
+
+  const logout = () => {
+    localStorage.removeItem('dfm_user');
+    setUser(null);
+    setView('dashboard');
+  };
+
+  // --- Data Fetching (localStorage) ---
+  const seedChecklistOnce = () => {
+    const saved = localStorage.getItem('dfm_checklist');
+    if (!saved) {
+      const initial = MASTER_CHECKLIST.map((item, idx) => ({ ...item, id: `item-${idx}` }));
+      localStorage.setItem('dfm_checklist', JSON.stringify(initial));
+      setChecklist(initial);
+    } else {
+      setChecklist(JSON.parse(saved));
     }
   };
 
-  const logout = () => signOut(auth);
-
-  // --- Data Fetching ---
-  // ... (existing seedChecklistOnce, fetchProjects, fetchLessons, fetchResults) ...
-  const seedChecklistOnce = async () => {
-    const q = query(collection(db, 'checklist_items'));
-    const snapshot = await getDocs(q);
-    if (snapshot.empty) {
-      console.log("Seeding master checklist...");
-      for (const item of MASTER_CHECKLIST) {
-        await addDoc(collection(db, 'checklist_items'), item);
-      }
+  const fetchProjects = () => {
+    const saved = localStorage.getItem('dfm_projects');
+    if (saved) {
+      const pList = JSON.parse(saved);
+      setProjects(pList.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
     }
-    // Fetch checklist
-    const items: ChecklistItem[] = [];
-    const updatedSnapshot = await getDocs(q);
-    updatedSnapshot.forEach(doc => {
-      items.push({ id: doc.id, ...doc.data() } as ChecklistItem);
-    });
-    setChecklist(items);
-  };
-
-  const fetchProjects = (uid: string) => {
-    const q = query(
-      collection(db, 'projects'), 
-      where('ownerId', '==', uid),
-      orderBy('createdAt', 'desc')
-    );
-    return onSnapshot(q, (snapshot) => {
-      const pList: Project[] = [];
-      snapshot.forEach(doc => {
-        pList.push({ id: doc.id, ...doc.data() } as Project);
-      });
-      setProjects(pList);
-    });
   };
 
   const fetchLessons = () => {
-    const q = query(collection(db, 'lessons_learned'), orderBy('createdAt', 'desc'));
-    return onSnapshot(q, (snapshot) => {
-      const lList: LessonLearned[] = [];
-      snapshot.forEach(doc => {
-        lList.push({ id: doc.id, ...doc.data() } as LessonLearned);
-      });
-      setLessons(lList);
-    });
+    const saved = localStorage.getItem('dfm_lessons');
+    if (saved) {
+      const lList = JSON.parse(saved);
+      setLessons(lList.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+    }
   };
 
   const fetchResults = (projectId: string) => {
-    const q = query(collection(db, `projects/${projectId}/results`));
-    return onSnapshot(q, (snapshot) => {
-      const rMap: Record<string, CheckResult> = {};
-      snapshot.forEach(doc => {
-        const data = doc.data() as CheckResult;
-        rMap[data.checklistItemId] = { id: doc.id, ...data };
-      });
-      setResults(rMap);
-    });
+    const saved = localStorage.getItem(`dfm_results_${projectId}`);
+    if (saved) {
+      setResults(JSON.parse(saved));
+    } else {
+      setResults({});
+    }
+  };
+
+  const deleteProject = (projectId: string) => {
+    if (!confirm("Are you sure you want to delete this project?")) return;
+    const updated = projects.filter(p => p.id !== projectId);
+    localStorage.setItem('dfm_projects', JSON.stringify(updated));
+    setProjects(updated);
+    localStorage.removeItem(`dfm_results_${projectId}`);
+    if (currentProject?.id === projectId) setView('dashboard');
+  };
+
+  const updateProject = (projectId: string, name: string) => {
+    const updated = projects.map(p => p.id === projectId ? { ...p, name } : p);
+    localStorage.setItem('dfm_projects', JSON.stringify(updated));
+    setProjects(updated);
+  };
+
+  const updateChecklistItem = (itemId: string, field: 'standard' | 'remark', value: string) => {
+    const updated = checklist.map(item => item.id === itemId ? { ...item, [field]: value } : item);
+    localStorage.setItem('dfm_checklist', JSON.stringify(updated));
+    setChecklist(updated);
+  };
+
+  const createProject = () => {
+    if (!newProjectName.trim() || !user) return;
+    const newP: Project = {
+      id: Math.random().toString(36).substr(2, 9),
+      name: newProjectName,
+      createdAt: new Date().toISOString(),
+      ownerId: user.uid,
+      status: 'in-progress'
+    };
+    const updated = [...projects, newP];
+    localStorage.setItem('dfm_projects', JSON.stringify(updated));
+    setProjects(updated);
+    setNewProjectName('');
+    setShowNewProjectModal(false);
+    openProject(newP);
+  };
+
+  const updateResult = (itemId: string, status: 'OK' | 'NG' | 'N/A', remark: string = '') => {
+    if (!currentProject) return;
+    const newResults = {
+      ...results,
+      [itemId]: {
+        projectId: currentProject.id,
+        checklistItemId: itemId,
+        status,
+        remark,
+        updatedAt: new Date().toISOString()
+      }
+    };
+    setResults(newResults);
+    localStorage.setItem(`dfm_results_${currentProject.id}`, JSON.stringify(newResults));
+  };
+
+  const addLesson = (title: string, content: string, category: string) => {
+    if (!user) return;
+    const newL: LessonLearned = {
+      id: Math.random().toString(36).substr(2, 9),
+      title,
+      content,
+      category,
+      createdAt: new Date().toISOString(),
+      authorId: user.uid
+    };
+    const updated = [...lessons, newL];
+    localStorage.setItem('dfm_lessons', JSON.stringify(updated));
+    setLessons(updated);
   };
 
   // --- PDF Handling ---
@@ -521,35 +559,6 @@ export default function App() {
     renderPage(next);
   };
 
-  // --- Existing Actions ---
-  const deleteProject = async (projectId: string) => {
-    if (!confirm("Are you sure you want to delete this project?")) return;
-    try {
-      await deleteDoc(doc(db, 'projects', projectId));
-      if (currentProject?.id === projectId) setView('dashboard');
-    } catch (error) {
-      console.error("Delete failed", error);
-    }
-  };
-
-  const updateProject = async (projectId: string, name: string) => {
-    try {
-      await updateDoc(doc(db, 'projects', projectId), { name });
-    } catch (error) {
-      console.error("Update failed", error);
-    }
-  };
-
-  const updateChecklistItem = async (itemId: string, field: 'standard' | 'remark', value: string) => {
-    try {
-      await updateDoc(doc(db, 'checklist_items', itemId), { [field]: value });
-      // Update local state
-      setChecklist(prev => prev.map(item => item.id === itemId ? { ...item, [field]: value } : item));
-    } catch (error) {
-      console.error("Update checklist item failed", error);
-    }
-  };
-
   const addStamp = (type: Stamp['type']) => {
     if (!user) return;
     let text = type === 'NAME' ? user.displayName || 'User' : 
@@ -578,19 +587,6 @@ export default function App() {
 
   const removeStamp = (id: string) => {
     setStamps(prev => prev.filter(s => s.id !== id));
-  };
-
-  const createProject = async () => {
-    if (!newProjectName.trim() || !user) return;
-    const docRef = await addDoc(collection(db, 'projects'), {
-      name: newProjectName,
-      createdAt: serverTimestamp(),
-      ownerId: user.uid,
-      status: 'in-progress'
-    });
-    setNewProjectName('');
-    setShowNewProjectModal(false);
-    openProject({ id: docRef.id, name: newProjectName, ownerId: user.uid, status: 'in-progress', createdAt: new Date() });
   };
 
   const askAI = async () => {
@@ -629,6 +625,7 @@ export default function App() {
       setIsAnalyzing(false);
     }
   };
+
   const openProject = (project: Project) => {
     setCurrentProject(project);
     fetchResults(project.id);
@@ -638,35 +635,6 @@ export default function App() {
     setPdfDoc(null);
     setCurrentPage(1);
     setPageImage(null);
-  };
-
-  const updateResult = async (itemId: string, status: 'OK' | 'NG' | 'N/A', remark: string = '') => {
-    if (!currentProject) return;
-    const existing = results[itemId];
-    const data = {
-      projectId: currentProject.id,
-      checklistItemId: itemId,
-      status,
-      remark,
-      updatedAt: serverTimestamp()
-    };
-
-    if (existing?.id) {
-      await updateDoc(doc(db, `projects/${currentProject.id}/results/${existing.id}`), data);
-    } else {
-      await addDoc(collection(db, `projects/${currentProject.id}/results`), data);
-    }
-  };
-
-  const addLesson = async (title: string, content: string, category: string) => {
-    if (!user) return;
-    await addDoc(collection(db, 'lessons_learned'), {
-      title,
-      content,
-      category,
-      createdAt: serverTimestamp(),
-      authorId: user.uid
-    });
   };
 
   // --- Render Helpers ---
