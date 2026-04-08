@@ -161,6 +161,9 @@ export default function App() {
   const [stamps, setStamps] = useState<Stamp[]>([]);
   const [isDraggingStamp, setIsDraggingStamp] = useState<string | null>(null);
 
+  const [showChecklist, setShowChecklist] = useState(true);
+  const [showAiResults, setShowAiResults] = useState(false);
+
   // PDF State
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -389,8 +392,6 @@ export default function App() {
 
     const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
     setPageImage(base64Image);
-    
-    analyzeDfmWithAI(base64Image);
   };
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -433,74 +434,6 @@ export default function App() {
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
     updateStampPos(id, x, y);
-  };
-
-  const analyzeDfmWithAI = async (base64Image: string) => {
-    setIsAnalyzing(true);
-    
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-    const model = "gemini-3-flash-preview";
-
-    const checklistContext = checklist.map(item => `- [${item.id}] ${item.item} > ${item.subItem}: ${item.checkPoint}`).join('\n');
-    const lessonsContext = lessons.map(l => `- Lesson: ${l.title} (${l.category}): ${l.content}`).join('\n');
-
-    const prompt = `
-      You are a DFM (Design for Manufacturing) expert. 
-      Analyze the attached DFM document image (Page ${currentPage} of ${totalPages}).
-      
-      1. Identify which parts of the DFM checklist are relevant to this specific page.
-      2. Provide a VERY CONCISE analysis:
-         - Issue: [Brief description of the issue]
-         - Solution: [Brief solution]
-         - Reference: [Standard or previous lesson]
-         - Suggestion: OK, NG, or N/A.
-      
-      If there are multiple issues, number them and use bold for the numbers (e.g., **1.**, **2.**).
-      Keep it as short as possible.
-      
-      Master Checklist Items:
-      ${checklistContext}
-      
-      Lessons Learned Database:
-      ${lessonsContext}
-      
-      Return your response in JSON format:
-      {
-        "summary": "Brief summary",
-        "issue": "Concise issue list",
-        "solution": "Concise solution list",
-        "reference": "Concise reference",
-        "suggestion": "OK" | "NG" | "N/A",
-        "relevantItemIds": ["id1", "id2", ...]
-      }
-    `;
-
-    try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: [
-          { parts: [{ text: prompt }, { inlineData: { data: base64Image, mimeType: "image/jpeg" } }] }
-        ],
-        config: { responseMimeType: "application/json" }
-      });
-
-      const data = JSON.parse(response.text || '{}');
-      setAiAnalysis(data);
-      setSuggestedItems(data.relevantItemIds || []);
-      // Auto-expand groups that have suggested items
-      const newCollapsed = { ...collapsedGroups };
-      checklist.forEach(item => {
-        if (data.relevantItemIds?.includes(item.id)) {
-          newCollapsed[item.item] = false;
-        }
-      });
-      setCollapsedGroups(newCollapsed);
-    } catch (error) {
-      console.error("AI Analysis failed", error);
-      setAiAnalysis(null);
-    } finally {
-      setIsAnalyzing(false);
-    }
   };
 
   const suggestLessonLearned = async () => {
@@ -592,19 +525,42 @@ export default function App() {
   const askAI = async () => {
     if (!pageImage) return;
     setIsAnalyzing(true);
+    setShowAiResults(true);
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
     const model = "gemini-3-flash-preview";
 
+    const checklistContext = checklist.map(item => `- [${item.id}] ${item.item} > ${item.subItem}: ${item.checkPoint}`).join('\n');
+    const lessonsContext = lessons.map(l => `- Lesson: ${l.title} (${l.category}): ${l.content}`).join('\n');
+
     const prompt = `
-      You are a DFM expert. Evaluate the current DFM page for any potential errors or improvements.
-      Use your general knowledge and the provided context.
-      If possible, refer to common industry standards.
+      You are a DFM (Design for Manufacturing) expert. 
+      Analyze the attached DFM document image (Page ${currentPage} of ${totalPages}).
       
-      Return a VERY CONCISE expert evaluation in this format:
-      Issue: [Brief description]
-      Solution: [Brief solution]
-      Reference: [Standard or previous lesson]
-      Suggestion: OK, NG, or N/A.
+      1. Identify which parts of the DFM checklist are relevant to this specific page.
+      2. Provide a VERY CONCISE analysis:
+         - Issue: [Brief description of the issue]
+         - Solution: [Brief solution]
+         - Reference: [Standard or previous lesson]
+         - Suggestion: OK, NG, or N/A.
+      
+      If there are multiple issues, number them and use bold for the numbers (e.g., **1.**, **2.**).
+      Keep it as short as possible.
+      
+      Master Checklist Items:
+      ${checklistContext}
+      
+      Lessons Learned Database:
+      ${lessonsContext}
+      
+      Return your response in JSON format:
+      {
+        "summary": "Expert summary of the page",
+        "issue": "Concise issue list",
+        "solution": "Concise solution list",
+        "reference": "Concise reference",
+        "suggestion": "OK" | "NG" | "N/A",
+        "relevantItemIds": ["id1", "id2", ...]
+      }
     `;
 
     try {
@@ -612,15 +568,24 @@ export default function App() {
         model,
         contents: [
           { parts: [{ text: prompt }, { inlineData: { data: pageImage, mimeType: "image/jpeg" } }] }
-        ]
+        ],
+        config: { responseMimeType: "application/json" }
       });
-      const text = response.text || 'No response';
-      setAiAnalysis(prev => ({
-        ...(prev || { summary: '', relevantItemIds: [], suggestion: 'N/A', issue: '', solution: '', reference: '' }),
-        summary: text
-      }));
+
+      const data = JSON.parse(response.text || '{}');
+      setAiAnalysis(data);
+      setSuggestedItems(data.relevantItemIds || []);
+      
+      // Auto-expand groups that have suggested items
+      const newCollapsed = { ...collapsedGroups };
+      checklist.forEach(item => {
+        if (data.relevantItemIds?.includes(item.id)) {
+          newCollapsed[item.item] = false;
+        }
+      });
+      setCollapsedGroups(newCollapsed);
     } catch (error) {
-      console.error("Ask AI failed", error);
+      console.error("AI Analysis failed", error);
     } finally {
       setIsAnalyzing(false);
     }
@@ -779,7 +744,9 @@ export default function App() {
                 
                   <div className="flex items-center gap-2">
                     <input type="file" ref={checksheetInputRef} className="hidden" accept=".xlsx,.xls,.csv" />
-                    <Button variant="outline" icon={FileText} onClick={() => checksheetInputRef.current?.click()}>Upload Checksheet</Button>
+                    <Button variant={showChecklist ? "primary" : "outline"} icon={FileText} onClick={() => setShowChecklist(!showChecklist)}>
+                      {showChecklist ? "Hide Checklist" : "Show Checklist"}
+                    </Button>
                     
                     <input type="file" ref={dfmInputRef} className="hidden" accept="application/pdf" onChange={handleDfmUpload} />
                     <Button variant="primary" icon={Upload} onClick={() => dfmInputRef.current?.click()}>Upload DFM PDF</Button>
@@ -795,8 +762,8 @@ export default function App() {
               </div>
 
               <div className="flex flex-row gap-6 h-[calc(100vh-200px)]">
-                {/* Left: PDF Viewer & AI Analysis */}
-                <div style={{ width: `${panelWidth}%` }} className="flex flex-col gap-6 overflow-hidden">
+                {/* Left: PDF Viewer */}
+                <div style={{ width: showChecklist ? `${panelWidth}%` : '100%' }} className="flex flex-col gap-6 overflow-hidden relative transition-all duration-300">
                   <Card className="p-0 bg-gray-800 flex-1 flex flex-col relative overflow-hidden">
                     <div className="p-3 bg-gray-900 text-white flex items-center justify-between z-10">
                       <div className="flex items-center gap-4">
@@ -907,75 +874,99 @@ export default function App() {
                       )}
                     </Card>
 
-                  {aiAnalysis && (
-                    <Card className="p-5 border-blue-200 bg-blue-50/30 space-y-4">
-                      <div className="flex justify-between items-center">
-                        <h3 className="font-bold text-blue-900 flex items-center gap-2">
-                          <Lightbulb size={18} className="text-blue-600" />
-                          AI Expert Analysis
-                        </h3>
-                        {aiAnalysis.suggestion && (
-                          <Badge variant={aiAnalysis.suggestion === 'OK' ? 'success' : 'error'}>
-                            {aiAnalysis.suggestion}
-                          </Badge>
-                        )}
-                      </div>
-                      
-                      <div className="space-y-3">
-                        {aiAnalysis.issue && (
-                          <div className="text-sm text-gray-700">
-                            <span className="font-bold text-red-600">Issue: </span>
-                            <div className="pl-4 whitespace-pre-line">
-                              <Markdown>{aiAnalysis.issue}</Markdown>
+                  {/* AI Analysis Overlay (Floating) */}
+                  <AnimatePresence>
+                    {showAiResults && aiAnalysis && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                        className="absolute bottom-6 left-6 right-6 z-40"
+                      >
+                        <Card className="p-5 border-blue-200 bg-white/95 backdrop-blur shadow-2xl space-y-4 max-h-[300px] overflow-y-auto">
+                          <div className="flex justify-between items-center sticky top-0 bg-white/95 py-1 z-10">
+                            <h3 className="font-bold text-blue-900 flex items-center gap-2">
+                              <Lightbulb size={18} className="text-blue-600" />
+                              AI Expert Analysis
+                            </h3>
+                            <div className="flex items-center gap-2">
+                              {aiAnalysis.suggestion && (
+                                <Badge variant={aiAnalysis.suggestion === 'OK' ? 'success' : 'error'}>
+                                  {aiAnalysis.suggestion}
+                                </Badge>
+                              )}
+                              <button onClick={() => setShowAiResults(false)} className="p-1 hover:bg-gray-100 rounded-full text-gray-400">
+                                <X size={16} />
+                              </button>
                             </div>
                           </div>
-                        )}
-                        {aiAnalysis.solution && (
-                          <div className="text-sm text-gray-700">
-                            <span className="font-bold text-green-600">Solution: </span>
-                            <div className="pl-4 whitespace-pre-line">
-                              <Markdown>{aiAnalysis.solution}</Markdown>
-                            </div>
+                          
+                          <div className="space-y-3">
+                            {aiAnalysis.issue && (
+                              <div className="text-sm text-gray-700">
+                                <span className="font-bold text-red-600">Issue: </span>
+                                <div className="pl-4 whitespace-pre-line">
+                                  <Markdown>{aiAnalysis.issue}</Markdown>
+                                </div>
+                              </div>
+                            )}
+                            {aiAnalysis.solution && (
+                              <div className="text-sm text-gray-700">
+                                <span className="font-bold text-green-600">Solution: </span>
+                                <div className="pl-4 whitespace-pre-line">
+                                  <Markdown>{aiAnalysis.solution}</Markdown>
+                                </div>
+                              </div>
+                            )}
+                            {aiAnalysis.reference && (
+                              <div className="text-sm text-gray-500 italic">
+                                <span className="font-bold">Ref: </span>
+                                {aiAnalysis.reference}
+                              </div>
+                            )}
+                            {aiAnalysis.summary && !aiAnalysis.issue && (
+                              <div className="text-sm text-gray-600 italic">
+                                {aiAnalysis.summary}
+                              </div>
+                            )}
                           </div>
-                        )}
-                        {aiAnalysis.reference && (
-                          <div className="text-sm text-gray-500 italic">
-                            <span className="font-bold">Ref: </span>
-                            {aiAnalysis.reference}
-                          </div>
-                        )}
-                        {aiAnalysis.summary && !aiAnalysis.issue && (
-                          <div className="text-sm text-gray-600 italic">
-                            {aiAnalysis.summary}
-                          </div>
-                        )}
-                      </div>
-                    </Card>
-                  )}
+                        </Card>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
 
                 {/* Resizer */}
-                <div 
-                  className="w-1 hover:w-2 bg-gray-200 hover:bg-blue-400 cursor-col-resize transition-all h-full rounded-full"
-                  onMouseDown={(e) => {
-                    const startX = e.clientX;
-                    const startWidth = panelWidth;
-                    const onMouseMove = (moveEvent: MouseEvent) => {
-                      const delta = ((moveEvent.clientX - startX) / window.innerWidth) * 100;
-                      setPanelWidth(Math.min(Math.max(startWidth + delta, 30), 80));
-                    };
-                    const onMouseUp = () => {
-                      document.removeEventListener('mousemove', onMouseMove);
-                      document.removeEventListener('mouseup', onMouseUp);
-                    };
-                    document.addEventListener('mousemove', onMouseMove);
-                    document.addEventListener('mouseup', onMouseUp);
-                  }}
-                />
+                {showChecklist && (
+                  <div 
+                    className="w-1 hover:w-2 bg-gray-200 hover:bg-blue-400 cursor-col-resize transition-all h-full rounded-full"
+                    onMouseDown={(e) => {
+                      const startX = e.clientX;
+                      const startWidth = panelWidth;
+                      const onMouseMove = (moveEvent: MouseEvent) => {
+                        const delta = ((moveEvent.clientX - startX) / window.innerWidth) * 100;
+                        setPanelWidth(Math.min(Math.max(startWidth + delta, 30), 80));
+                      };
+                      const onMouseUp = () => {
+                        document.removeEventListener('mousemove', onMouseMove);
+                        document.removeEventListener('mouseup', onMouseUp);
+                      };
+                      document.addEventListener('mousemove', onMouseMove);
+                      document.addEventListener('mouseup', onMouseUp);
+                    }}
+                  />
+                )}
 
                 {/* Right: Checklist */}
-                <div style={{ width: `${100 - panelWidth}%` }} className="flex flex-col gap-6 overflow-hidden">
-                  <Card className="flex flex-col h-full">
+                <AnimatePresence>
+                  {showChecklist && (
+                    <motion.div 
+                      initial={{ width: 0, opacity: 0 }}
+                      animate={{ width: `${100 - panelWidth}%`, opacity: 1 }}
+                      exit={{ width: 0, opacity: 0 }}
+                      className="flex flex-col gap-6 overflow-hidden"
+                    >
+                      <Card className="flex flex-col h-full">
                     <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
                       <div className="space-y-1">
                         <h3 className="font-bold text-gray-900">Checklist Evaluation</h3>
@@ -1088,10 +1079,12 @@ export default function App() {
                         );
                       })}
                     </div>
-                  </Card>
-                </div>
-              </div>
-            </motion.div>
+                    </Card>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          </motion.div>
           )}
 
           {view === 'lessons' && (
