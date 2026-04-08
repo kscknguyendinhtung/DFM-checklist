@@ -343,7 +343,6 @@ export default function App() {
 
   const renderPage = async (pageNum: number, pdfInstance = pdfDoc) => {
     if (!pdfInstance) return;
-    setIsAnalyzing(true);
     
     const page = await pdfInstance.getPage(pageNum);
     const viewport = page.getViewport({ scale: 2 * zoom }); // Increased base scale
